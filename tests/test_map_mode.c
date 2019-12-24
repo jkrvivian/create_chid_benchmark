@@ -6,23 +6,97 @@
  * "LICENSE" at the root of this distribution.
  */
 
+#include <time.h>
 #include "map/mode.h"
 #include "test_define.h"
+#include "cclient/api/core/core_api.h"
+#include "cclient/api/extended/extended_api.h"
+#include "common/trinary/trit_tryte.h"
+#include "common/trinary/tryte_ascii.h"
 
 #define CHID "UANFAVTSAXZMYUWRECNAOJDAQVTTORVGJCCISMZYAFFU9EYLBMZKEJ9VNXVFFGUTCHONEYVWVUTBTDJLO"
 #define NEW_CHID "ONMTPDICUWBGEGODWKGBGMLNAZFXNHCJITSSTBTGMXCXBXJFBPOPXFPOJTXKOOSAJOZAYANZZBFKYHJ9N"
 #define EPID "KI99YKKLFALYRUVRXKKRJCPVFISPMNCQQSMB9BGUWIHZTYFQOBZWYSVRNKVFJLSPPLPSFNBNREJWOR99U"
 
+struct timespec start_time, end_time;
+double diff_time(struct timespec start, struct timespec end) {
+  struct timespec diff;
+  if (end.tv_nsec - start.tv_nsec < 0) {
+    diff.tv_sec = end.tv_sec - start.tv_sec - 1;
+    diff.tv_nsec = end.tv_nsec - start.tv_nsec + 1000000000;
+  } else {
+    diff.tv_sec = end.tv_sec - start.tv_sec;
+    diff.tv_nsec = end.tv_nsec - start.tv_nsec;
+  }
+  return (diff.tv_sec + diff.tv_nsec / 1000000000.0);
+}
+
+void test_time_start(struct timespec* start) { clock_gettime(CLOCK_REALTIME, start); }
+
+void test_time_end(struct timespec* start, struct timespec* end, double* sum) {
+  clock_gettime(CLOCK_REALTIME, end);
+  double difference = diff_time(*start, *end);
+  printf("%lf\n", difference);
+  *sum += difference;
+}
+
+retcode_t send_bundle(bundle_transactions_t *const bundle) {
+  retcode_t ret = RC_OK;
+  iota_client_service_t serv;
+  serv.http.path = "/";
+  serv.http.content_type = "application/json";
+  serv.http.accept = "application/json";
+  serv.http.host = "localhost";
+  serv.http.port = 14265;
+  serv.http.api_version = 1;
+  serv.serializer_type = SR_JSON;
+  serv.http.ca_pem = NULL;
+  iota_client_core_init(&serv);
+  iota_client_extended_init();
+
+  Kerl kerl;
+  kerl_init(&kerl);
+  bundle_finalize(bundle, &kerl);
+  transaction_array_t *out_tx_objs = transaction_array_new();
+  hash8019_array_p raw_trytes = hash8019_array_new();
+  iota_transaction_t *curr_tx = NULL;
+  flex_trit_t trits_8019[FLEX_TRIT_SIZE_8019];
+
+  BUNDLE_FOREACH(bundle, curr_tx) {
+    transaction_serialize_on_flex_trits(curr_tx, trits_8019);
+    hash_array_push(raw_trytes, trits_8019);
+  }
+  if ((ret = iota_client_send_trytes(&serv, raw_trytes, 1, 14, NULL, true, out_tx_objs)) != RC_OK) {
+    goto done;
+  }
+
+done:
+  hash_array_free(raw_trytes);
+  transaction_array_free(out_tx_objs);
+  iota_client_extended_destroy();
+  iota_client_core_destroy(&serv);
+
+  return ret;
+}
+
 void test_channel_create(void) {
-  mam_api_t mam;
-  tryte_t channel_id[MAM_CHANNEL_ID_TRYTE_SIZE + 1];
-  mam_api_init(&mam, (tryte_t *)TRYTES_81_1);
+  for(int i = 1; i <= 7; ++i) {
+      double sum = 0;
+      for (int j = 0; j < 100; ++j) {
+          mam_api_t mam;
+          tryte_t channel_id[MAM_CHANNEL_ID_TRYTE_SIZE + 1];
+          mam_api_init(&mam, (tryte_t *)TRYTES_81_1);
 
-  map_channel_create(&mam, channel_id, 1);
-  channel_id[MAM_CHANNEL_ID_TRYTE_SIZE] = '\0';
-  TEST_ASSERT_EQUAL_STRING(CHID, channel_id);
+        test_time_start(&start_time);
+          map_channel_create(&mam, channel_id, i);
+        test_time_end(&start_time, &end_time, &sum);
+          channel_id[MAM_CHANNEL_ID_TRYTE_SIZE] = '\0';
+          //TEST_ASSERT_EQUAL_STRING(CHID, channel_id);
 
-  mam_api_destroy(&mam);
+          mam_api_destroy(&mam);
+      }
+      printf("Average time of send_mam_message: %lf\n", sum / 100.0);
+  }
 }
 
 void test_announce_channel(void) {
@@ -61,23 +135,39 @@ void test_announce_endpoint(void) {
 }
 
 void test_write_message(void) {
-  mam_api_t mam;
-  bundle_transactions_t *bundle = NULL;
-  bundle_transactions_new(&bundle);
-  tryte_t channel_id[MAM_CHANNEL_ID_TRYTE_SIZE + 1];
-  trit_t msg_id[MAM_MSG_ID_SIZE];
-  mam_api_init(&mam, (tryte_t *)TRYTES_81_1);
-  retcode_t ret = RC_ERROR;
+  double sum = 0;
+  int num_round = 100;
+  for (int i = 0; i < num_round; ++i) {
+      mam_api_t mam;
+      tryte_t channel_id[MAM_CHANNEL_ID_TRYTE_SIZE + 1];
+      trit_t msg_id[MAM_MSG_ID_SIZE];
+      mam_api_init(&mam, (tryte_t *)TRYTES_81_1);
+      retcode_t ret = RC_ERROR;
 
-  map_channel_create(&mam, channel_id, 1);
-  ret = map_write_header_on_channel(&mam, channel_id, bundle, msg_id);
-  TEST_ASSERT_EQUAL(RC_OK, ret);
+      map_channel_create(&mam, channel_id, 2);
+      printf("%s", (char *)channel_id);
+      for (int j = 1; j <= 4; ++j) {
+      test_time_start(&start_time);
+          bundle_transactions_t *bundle = NULL;
+          bundle_transactions_new(&bundle);
+          ret = map_write_header_on_channel(&mam, channel_id, bundle, msg_id);
+          TEST_ASSERT_EQUAL(RC_OK, ret);
 
-  ret = map_write_packet(&mam, bundle, TEST_PAYLOAD, msg_id, true);
-  TEST_ASSERT_EQUAL(RC_OK, ret);
+          if (j == 4) {
+              ret = map_write_packet(&mam, bundle, TEST_PAYLOAD, msg_id, true);
+          } else {
+              ret = map_write_packet(&mam, bundle, TEST_PAYLOAD, msg_id, false);
+          }
+          TEST_ASSERT_EQUAL(RC_OK, ret);
+          ret = send_bundle(bundle);
+          TEST_ASSERT_EQUAL(RC_OK, ret);
+      test_time_end(&start_time, &end_time, &sum);
 
-  bundle_transactions_free(&bundle);
-  mam_api_destroy(&mam);
+          bundle_transactions_free(&bundle);
+      }
+      mam_api_destroy(&mam);
+  }
+  printf("Average time of send_mam_message: %lf\n", sum / num_round);
 }
 
 void test_bundle_read(void) {
@@ -124,10 +214,14 @@ void test_bundle_read(void) {
 
 int main(void) {
   UNITY_BEGIN();
+  /*
   RUN_TEST(test_channel_create);
   RUN_TEST(test_announce_channel);
   RUN_TEST(test_announce_endpoint);
+  */
   RUN_TEST(test_write_message);
+  /*
   RUN_TEST(test_bundle_read);
+  */
   return UNITY_END();
 }
